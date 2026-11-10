@@ -1,0 +1,479 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#081209">
+<title>Лёня должен 💸</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💸</text></svg>">
+<style>
+ html,body{margin:0;padding:0;height:100%;background:#081209;overflow:hidden;overscroll-behavior:none}
+ canvas{display:block;touch-action:none;-webkit-tap-highlight-color:transparent;user-select:none;-webkit-user-select:none}
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<noscript style="color:#f4ecd8;font-family:sans-serif;display:block;padding:20px">Включи JavaScript — иначе Лёня не расплатится.</noscript>
+<script>
+'use strict';
+/* ============ НАСТРОЙКИ ДОЛГА ============ */
+const PRINCIPAL = 1000;
+const START     = new Date(2026,10,10, 0,0,0).getTime();
+const DEADLINE  = new Date(2026,11,10,23,59,59).getTime();
+const DAILY     = 0.01;
+
+const cv  = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+const FD  = '"Arial Black","Roboto","Helvetica Neue",Arial,sans-serif';
+const FB  = '"Roboto","Segoe UI",Arial,sans-serif';
+const RUB = '\u20BD';
+/* canvas понимает ТОЛЬКО эти значения textAlign — никаких 'c'/'l'/'r' */
+const AL  = {l:'left', c:'center', r:'right'};
+
+const COL = {gold:'#f6c945',goldL:'#ffe9a8',goldD:'#b98f2e',cream:'#f4ecd8',
+             dim:'rgba(244,236,216,.55)',green:'#5ec98b',red:'#ff5f5f',
+             panel:'#0d1c14',panel2:'#122a1d'};
+
+const amountAt = t => PRINCIPAL*Math.pow(1+DAILY, Math.max(0,t-START)/864e5);
+const fmtInt   = n => String(n).replace(/\B(?=(\d{3})+(?!\d))/g,'\u2009');
+const p2       = n => String(n).padStart(2,'0');
+function plural(n,a,b,c){n=Math.abs(n)%100;const d=n%10;if(n>10&&n<20)return c;if(d>1&&d<5)return b;if(d===1)return a;return c;}
+const declDay = n => plural(n,'день','дня','дней');
+
+let W=0,H=0,DPR=1,L=null,slotsCache=null,lastIntLen=0,K=1;
+let NCX=0,NCY=0,SCX=0,SCY=0;
+let tickerX=0,lastT=performance.now()/1000,fadeT=0;
+let flash=0,shake=0,lastKop=-1,pressed=null,hover=false,ambT=0;
+const sparks=[],coins=[],toast={msg:'',until:0};
+let soundOn=(localStorage.getItem('lenya_snd')||'1')==='1',AC=null;
+
+const ambient=[];
+for(let i=0;i<16;i++)ambient.push({x:Math.random(),y:Math.random(),s:12+Math.random()*26,
+  v:6+Math.random()*10,amp:8+Math.random()*14,f:.2+Math.random()*.4,ph:Math.random()*6.28,
+  a:.04+Math.random()*.07,ch:['₽','₽','₽','✦'][Math.floor(Math.random()*4)],
+  c:Math.random()<.75?COL.gold:COL.green});
+
+function coinSnd(){
+  if(!soundOn)return;
+  try{
+    AC=AC||new (window.AudioContext||window.webkitAudioContext)();
+    if(AC.state==='suspended')AC.resume();
+    const t0=AC.currentTime;
+    [[1046,0],[1568,.055]].forEach(([f,dt])=>{
+      const o=AC.createOscillator(),g=AC.createGain();
+      o.type='triangle';o.frequency.value=f;
+      g.gain.setValueAtTime(.0001,t0+dt);
+      g.gain.exponentialRampToValueAtTime(.11,t0+dt+.012);
+      g.gain.exponentialRampToValueAtTime(.0001,t0+dt+.18);
+      o.connect(g).connect(AC.destination);o.start(t0+dt);o.stop(t0+dt+.2);
+    });
+  }catch(e){}
+}
+
+/* ---------- утилиты ---------- */
+function rr(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);
+  ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();}
+function spacedW(t,ls){let w=0,n=0;for(const ch of t){w+=ctx.measureText(ch).width;n++;}return w+ls*(n-1);}
+function spaced(t,x,y,ls,al){
+  ctx.textAlign='left';ctx.textBaseline='alphabetic';
+  const w=spacedW(t,ls);let sx=al==='c'?x-w/2:al==='r'?x-w:x;
+  for(const ch of t){ctx.fillText(ch,sx,y);sx+=ctx.measureText(ch).width+ls;}
+}
+function line(x1,y1,x2,y2){ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();}
+function txt(t,x,y,size,fam,w,col,al){
+  ctx.font=`${w||700} ${size}px ${fam}`;
+  ctx.fillStyle=col;ctx.textAlign=AL[al]||'center';ctx.textBaseline='alphabetic';
+  ctx.fillText(t,x,y);
+}
+function fitTxt(t,x,y,size,fam,w,col,al,maxW){
+  let s=size;ctx.font=`${w} ${s}px ${fam}`;
+  while(s>9&&ctx.measureText(t).width>maxW){s-=1;ctx.font=`${w} ${s}px ${fam}`;}
+  ctx.fillStyle=col;ctx.textAlign=AL[al]||'center';ctx.textBaseline='alphabetic';
+  ctx.fillText(t,x,y);
+}
+
+/* ---------- раскладка ---------- */
+function layout(){
+  W=innerWidth;H=innerHeight;DPR=Math.min(2,devicePixelRatio||1);
+  cv.width=Math.round(W*DPR);cv.height=Math.round(H*DPR);
+  cv.style.width=W+'px';cv.style.height=H+'px';
+  const u=Math.min(W,560),pad=Math.max(14,u*.05);
+  const tickH=Math.round(Math.max(24,u*.055));
+  const labS=Math.max(10,u*.026);
+  const ts=Math.min(u*.115,(W-2*pad)/8.0);
+  const s=Math.min(56,(W-2*pad)/8.1);
+  const inner=s*.42,slotW=s*.78,slotS=s*.55*.78;
+  const panelH=s*1.9;
+  const rateS=Math.max(11,s*.30);
+  const cardH=Math.max(58,Math.min(66,u*.14)),cardS1=Math.max(10,u*.024),cardS2=Math.min(17,u*.042);
+  const cdLab=Math.max(10,u*.025),cdBig=Math.min(36,u*.088),cdSm=Math.max(10,u*.025);
+  const hintS=Math.max(10,u*.024),btnH=Math.max(46,u*.115);
+  const baseGap=Math.max(10,u*.03);
+
+  let y=tickH+baseGap;
+  const Y={};
+  Y.label=y+labS;                    y+=labS+baseGap*.9;
+  Y.title=y+ts*.82;                  y+=ts*.82+baseGap;
+  Y.panel=y;                         y+=panelH+baseGap*.8;
+  Y.rate=y+rateS;                    y+=rateS+baseGap;
+  Y.cards=y;                         y+=cardH+baseGap;
+  Y.cdLab=y+cdLab;                   y+=cdLab+8;
+  Y.cdBig=y+cdBig*.85;               y+=cdBig*.85+30;
+  Y.bar=y;                           y+=8+18;
+  Y.cdSm=y+cdSm;                     y+=cdSm+baseGap;
+  Y.hint=y+hintS;                    y+=hintS+baseGap;
+  Y.btn=y;                           y+=btnH;
+  const total=y-tickH,footH=Math.max(26,u*.06);
+  const avail=H-tickH-footH;
+  K=Math.max(.5,Math.min(1,avail/total));
+  NCX=W/2;NCY=tickH+total/2;SCX=W/2;SCY=tickH+avail/2;
+  const footY=H-Math.max(8,(footH-12)/2);
+
+  const btnW=Math.min(W-2*pad,560)-70,bx=W/2-btnW/2-27;
+  L={u,pad,tickH,labS,ts,s,inner,slotW,slotS,panelW:0,panelH,rateS,cardH,cardS1,cardS2,
+     cdLab,cdBig,cdSm,hintS,btnH,Y,footH,footY,
+     btnCopy:{x:bx,y:Y.btn,w:btnW,h:btnH,id:'c'},
+     btnSound:{x:bx+btnW+14,y:Y.btn,w:56,h:btnH,id:'s'}};
+  lastIntLen=0;
+}
+
+/* ---------- слоты одометра ---------- */
+function buildSlots(intLen){
+  const a=[];
+  for(let r=0;r<intLen;r++){
+    if(r>0&&r%3===0)a.push({t:'sp'});
+    a.push({t:'r',p:r+4});
+  }
+  a.reverse();
+  a.push({t:'c'},{t:'r',p:3},{t:'r',p:2},{t:'d'},{t:'r',p:1,sm:1},{t:'r',p:0,sm:1});
+  return a;
+}
+const slotWdt=(sl,s)=>sl.t==='r'?(sl.sm?L.slotS:L.slotW):sl.t==='sp'?s*.30:sl.t==='c'?s*.40:s*.22;
+function ensureSlots(amount){
+  const len=Math.max(1,String(Math.floor(amount)).length);
+  if(len!==lastIntLen||!slotsCache){
+    lastIntLen=len;slotsCache=buildSlots(len);
+    const cw=slotsCache.reduce((a,sl)=>a+slotWdt(sl,L.s),0);
+    L.panelW=cw+L.inner*2;
+  }
+  return slotsCache;
+}
+
+/* ---------- одометр ---------- */
+function drawReel(x,cy,sl,sz,N){
+  const sw=sl.sm?L.slotS:L.slotW, lh=sz*1.14, p10=Math.pow(10,sl.p);
+  const base=Math.floor(N/p10), d0=((base%10)+10)%10;
+  const low=N-base*p10, WIN=.15;
+  let f=Math.max(0,(low/p10-(1-WIN))/WIN); f=f*f*(3-2*f);
+  ctx.save();ctx.beginPath();ctx.rect(x-.5,cy-sz*.75,sw+1,sz*1.5);ctx.clip();
+  const g=ctx.createLinearGradient(0,cy-sz*.5,0,cy+sz*.5);
+  g.addColorStop(0,'#ffe9a3');g.addColorStop(.55,'#f4c542');g.addColorStop(1,'#c39322');
+  ctx.fillStyle=g;ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.font=`800 ${sz}px ${FD}`;
+  for(let k=-1;k<=1;k++){
+    const yy=cy+(k-f)*lh;
+    if(yy>cy-lh*1.6&&yy<cy+lh*1.6)ctx.fillText(String((d0+k+10)%10),x+sw/2,yy);
+  }
+  ctx.restore();
+}
+
+/* ---------- фон ---------- */
+function drawBg(t,dt){
+  let g=ctx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0,'#0d1b13');g.addColorStop(.55,'#0a1610');g.addColorStop(1,'#070f0a');
+  ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+  const g2=ctx.createRadialGradient(W/2,H*.42,10,W/2,H*.42,Math.max(W,H)*.7);
+  g.addColorStop(0,'rgba(246,201,69,.08)');g2.addColorStop(0,'rgba(246,201,69,.08)');g2.addColorStop(1,'rgba(246,201,69,0)');
+  ctx.fillStyle=g2;ctx.fillRect(0,0,W,H);
+  for(let m=0;m<2;m++){
+    ctx.beginPath();
+    const cx=m?W*.85:W*.12,cy2=m?H*.8:H*.18,R=Math.min(W,H)*(m?.5:.42),k=m?5:7,rot=t*(m?.02:-.015);
+    for(let i=0;i<=360;i+=3){const a=i*Math.PI/180,r=R*(.55+.45*Math.cos(k*a+rot));
+      const x=cx+r*Math.cos(a+rot*.7),y=cy2+r*Math.sin(a+rot*.7);
+      i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);}
+    ctx.closePath();ctx.strokeStyle=m?'rgba(94,201,139,.05)':'rgba(246,201,69,.055)';ctx.lineWidth=1;ctx.stroke();
+  }
+  ctx.textAlign='center';ctx.textBaseline='middle';
+  for(const p of ambient){
+    p.y-=p.v*dt/Math.max(H,1);if(p.y<-.06){p.y=1.06;p.x=Math.random();}
+    const x=p.x*W+Math.sin(t*p.f+p.ph)*p.amp;
+    ctx.globalAlpha=p.a;ctx.fillStyle=p.c;ctx.font=`700 ${p.s}px ${FB}`;
+    ctx.fillText(p.ch,x,p.y*H);
+  }
+  ctx.globalAlpha=1;
+}
+function drawTicker(t,dt){
+  const th=L.tickH,str='₽  ЛЁНЯ ДОЛЖЕН  •  1% В ДЕНЬ  •  СЛОЖНЫЙ ПРОЦЕНТ  •  ИНФЛЯЦИЯ НЕ ДРЕМЛЕТ  •  ВЕРНИ ДО 10.12.2026  •  ';
+  ctx.fillStyle='rgba(9,18,13,.85)';ctx.fillRect(0,0,W,th);
+  ctx.strokeStyle='rgba(246,201,69,.25)';ctx.lineWidth=1;line(0,th-.5,W,th-.5);
+  ctx.font=`700 ${Math.max(10,L.u*.026)}px ${FB}`;
+  ctx.textBaseline='middle';ctx.textAlign='left';
+  const w=ctx.measureText(str).width;
+  if(performance.now()/1000-lastT<.25)tickerX=(tickerX-dt*40)%w;
+  ctx.fillStyle='rgba(246,201,69,.85)';
+  for(let x=tickerX-w;x<W;x+=w)ctx.fillText(str,x,th/2+.5);
+  const sx=((t*90)%(W+160))-160;
+  ctx.save();ctx.beginPath();ctx.rect(sx,0,140,th);ctx.clip();
+  ctx.fillStyle='rgba(255,244,200,.9)';
+  for(let x=tickerX-w;x<W;x+=w)ctx.fillText(str,x,th/2+.5);
+  ctx.restore();
+}
+
+/* ---------- блоки ---------- */
+function drawTitle(t){
+  const s=L.ts,ls=3,sc=1+.01*Math.sin(t*2.2),cy0=L.Y.title-s*.35;
+  ctx.save();ctx.translate(W/2,cy0);ctx.scale(sc,sc);ctx.translate(-W/2,-cy0);
+  ctx.font=`900 ${s}px ${FD}`;ctx.textBaseline='alphabetic';
+  const w1=spacedW('ЛЁНЯ',ls),w2=spacedW('ДОЛЖЕН',ls),spw=ctx.measureText(' ').width+ls;
+  const x0=W/2-(w1+spw+w2)/2;
+  const g=ctx.createLinearGradient(0,L.Y.title-s*.8,0,L.Y.title+s*.1);
+  g.addColorStop(0,COL.goldL);g.addColorStop(1,COL.gold);
+  ctx.shadowColor='rgba(246,201,69,.35)';ctx.shadowBlur=16;
+  ctx.fillStyle=g;spaced('ЛЁНЯ',x0,L.Y.title,ls,'l');
+  ctx.shadowColor='rgba(255,95,95,.22)';ctx.shadowBlur=10;
+  ctx.fillStyle=COL.cream;spaced('ДОЛЖЕН',x0+w1+spw,L.Y.title,ls,'l');
+  ctx.shadowBlur=0;ctx.restore();
+}
+function drawPanel(t,N,slots){
+  const {s,inner,panelW,panelH}=L,px=W/2-panelW/2,py=L.Y.panel;
+  const fl=Math.min(1,flash);
+  ctx.save();ctx.shadowColor=`rgba(246,201,69,${.18+fl*.5})`;ctx.shadowBlur=26+fl*24;
+  rr(px,py,panelW,panelH,16);
+  const pg=ctx.createLinearGradient(0,py,0,py+panelH);
+  pg.addColorStop(0,COL.panel2);pg.addColorStop(1,COL.panel);ctx.fillStyle=pg;ctx.fill();
+  ctx.restore();
+  rr(px,py,panelW,panelH,16);
+  ctx.strokeStyle=`rgba(246,201,69,${.4+fl*.6})`;ctx.lineWidth=1.5;ctx.stroke();
+  rr(px+3,py+3,panelW-6,panelH-6,12);ctx.strokeStyle='rgba(246,201,69,.12)';ctx.lineWidth=1;ctx.stroke();
+  let x=px+inner;const cy=py+panelH/2;
+  for(const sl of slots){
+    const w=slotWdt(sl,s);
+    if(sl.t==='r')drawReel(x,cy,sl,sl.sm?s*.55:s,N);
+    else if(sl.t==='c'){ /* запятая стоит на базовой линии, хвостиком вниз */
+      ctx.font=`800 ${s*.9}px ${FD}`;ctx.fillStyle=COL.cream;
+      ctx.textAlign='center';ctx.textBaseline='alphabetic';
+      ctx.fillText(',',x+w/2,cy+s*.36);
+    }
+    else if(sl.t==='d'){ctx.strokeStyle='rgba(244,236,216,.18)';ctx.lineWidth=1;
+      line(x+w/2,cy-s*.45,x+w/2,cy+s*.45);}
+    x+=w;
+  }
+  const sh=ctx.createLinearGradient(0,py+6,0,py+panelH-6);
+  sh.addColorStop(0,'rgba(10,20,14,.92)');sh.addColorStop(.26,'rgba(10,20,14,0)');
+  sh.addColorStop(.74,'rgba(10,20,14,0)');sh.addColorStop(1,'rgba(10,20,14,.92)');
+  ctx.fillStyle=sh;rr(px+2,py+2,panelW-4,panelH-4,14);ctx.fill();
+  txt(RUB,px+panelW-inner*.4,py+panelH-inner*.35,Math.max(11,s*.26),FB,700,'rgba(244,236,216,.4)','r');
+  ctx.save();ctx.translate(Math.min(px+panelW-46,W-60),py-2);ctx.rotate(-.16+.02*Math.sin(t*1.3));
+  rr(-50,-12,100,24,7);ctx.strokeStyle='rgba(255,95,95,.85)';ctx.lineWidth=2;ctx.stroke();
+  rr(-46,-8,92,16,5);ctx.lineWidth=1;ctx.stroke();
+  txt('1% В ДЕНЬ',0,4,10,FD,900,'rgba(255,95,95,.9)','c');
+  ctx.restore();
+}
+function drawCards(){
+  const {pad,cardH,cardS1,cardS2,Y}=L,gapW=12,gw=(W-2*pad-gapW)/2;
+  const data=[['ЗАНЯЛ','1 000 '+RUB,'10.11.2026'],['ОБЕЩАЛ ВЕРНУТЬ','до 10.12.2026','торжественно клянётся']];
+  data.forEach((d,i)=>{
+    const x=pad+i*(gw+gapW);
+    rr(x,Y.cards,gw,cardH,12);ctx.fillStyle='rgba(255,255,255,.045)';ctx.fill();
+    ctx.strokeStyle='rgba(246,201,69,.18)';ctx.lineWidth=1;ctx.stroke();
+    txt(d[0],x+12,Y.cards+cardS1+8,cardS1,FB,700,COL.dim,'l');
+    fitTxt(d[1],x+12,Y.cards+cardS1+14+cardS2,cardS2,FB,800,i?COL.cream:COL.gold,'l',gw-24);
+    txt(d[2],x+12,Y.cards+cardH-9,Math.max(9,cardS1-1),FB,400,'rgba(244,236,216,.38)','l');
+  });
+}
+function drawCountdown(now){
+  const {Y,cdLab,cdBig,cdSm,pad}=L,rem=DEADLINE-now,over=rem<0,base=over?now-DEADLINE:rem;
+  const d=Math.floor(base/864e5),h=Math.floor(base/36e5)%24,m=Math.floor(base/6e4)%60,s=Math.floor(base/1e3)%60;
+  ctx.font=`700 ${cdLab}px ${FB}`;ctx.fillStyle=over?COL.red:'rgba(246,201,69,.75)';
+  spaced(over?'⚠ ПРОСРОЧКА — ПРОЦЕНТЫ КАПАЮТ':'ДО ДНЯ РАСЧЁТА — 10 ДЕКАБРЯ',W/2,Y.cdLab,2,'c');
+  ctx.save();
+  if(over){ctx.shadowColor='rgba(255,95,95,.5)';ctx.shadowBlur=14;}
+  fitTxt(`${d} ${declDay(d)} ${p2(h)}:${p2(m)}:${p2(s)}`,W/2,Y.cdBig,cdBig,FD,900,over?COL.red:COL.cream,'c',W-2*pad);
+  ctx.restore();
+  const bw=Math.min(W-2*pad,560),bx=W/2-bw/2,by=Y.bar;
+  txt('10.11',bx,by-6,cdSm-2,FB,600,COL.dim,'l');
+  txt('10.12',bx+bw,by-6,cdSm-2,FB,600,COL.dim,'r');
+  const frac=Math.max(0,Math.min(1,(now-START)/(DEADLINE-START)));
+  rr(bx,by,bw,8,4);ctx.fillStyle='rgba(255,255,255,.08)';ctx.fill();
+  if(frac>0){rr(bx,by,Math.max(8,bw*frac),8,4);
+    const bg=ctx.createLinearGradient(bx,0,bx+bw,0);
+    bg.addColorStop(0,COL.goldD);bg.addColorStop(1,COL.goldL);ctx.fillStyle=bg;ctx.fill();}
+  ctx.beginPath();ctx.arc(bx+bw*frac,by+4,6,0,7);ctx.fillStyle=COL.goldL;ctx.fill();
+  ctx.lineWidth=2;ctx.strokeStyle='#0a1610';ctx.stroke();
+  const el=Math.max(0,now-START),ed=Math.floor(el/864e5),
+        eh=Math.floor(el/36e5)%24,em=Math.floor(el/6e4)%60,es=Math.floor(el/1e3)%60;
+  fitTxt(`растёт ${ed} ${declDay(ed)} ${p2(eh)}:${p2(em)}:${p2(es)} • к 10.12 будет ≈ ${fmtInt(Math.round(amountAt(DEADLINE)))} ${RUB}`,
+      W/2,Y.cdSm,cdSm,FB,500,'rgba(244,236,216,.5)','c',W-2*pad);
+}
+function drawHint(t){
+  ctx.globalAlpha=.45+.25*Math.sin(t*2.5);
+  txt('тапни по экрану — посыплются монеты',W/2,L.Y.hint,L.hintS,FB,500,COL.dim,'c');
+  ctx.globalAlpha=1;
+}
+function drawBtn(b,label){
+  const sc=pressed===b.id?.965:(hover?1.02:1);
+  ctx.save();ctx.translate(b.x+b.w/2,b.y+b.h/2);ctx.scale(sc,sc);ctx.translate(-b.w/2,-b.h/2);
+  ctx.shadowColor='rgba(0,0,0,.45)';ctx.shadowBlur=10;ctx.shadowOffsetY=4;
+  rr(0,0,b.w,b.h,14);
+  const g=ctx.createLinearGradient(0,0,0,b.h);
+  g.addColorStop(0,COL.goldL);g.addColorStop(1,COL.goldD);ctx.fillStyle=g;ctx.fill();
+  ctx.shadowBlur=0;ctx.shadowOffsetY=0;
+  txt(label,b.w/2,b.h/2+Math.min(17,b.h*.16),Math.min(16,L.u*.036),FD,900,'#241a05','c');
+  ctx.restore();
+}
+function drawButtons(){
+  drawBtn(L.btnCopy,'СКОПИРОВАТЬ СЧЁТ ЛЁНЕ');
+  const b=L.btnSound,sc=pressed==='s'?.94:1;
+  ctx.save();ctx.translate(b.x+b.w/2,b.y+b.h/2);ctx.scale(sc,sc);
+  ctx.beginPath();ctx.arc(0,0,b.h/2,0,7);
+  ctx.fillStyle=soundOn?'rgba(94,201,139,.18)':'rgba(255,255,255,.07)';ctx.fill();
+  ctx.strokeStyle=soundOn?'rgba(94,201,139,.6)':'rgba(244,236,216,.3)';ctx.lineWidth=1.5;ctx.stroke();
+  ctx.font=`${Math.min(20,b.h*.4)}px ${FB}`;ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.fillStyle=COL.cream;ctx.fillText(soundOn?'🔔':'',0,1);
+  ctx.restore();
+}
+function drawFooter(){
+  txt('сделано с любовью и процентами • работает без интернета',W/2,L.footY,Math.max(9,L.u*.022),FB,400,'rgba(244,236,216,.3)','c');
+}
+
+/* ---------- эффекты ---------- */
+function spawnSpark(x,y){sparks.push({x,y,vx:(Math.random()-.5)*12,vy:-14-Math.random()*16,l:0,tl:1+Math.random()*.8,s:3+Math.random()*4});}
+function burst(x,y){
+  for(let i=0;i<16;i++){
+    const a=-Math.PI/2+(Math.random()-.5)*2.4,sp=120+Math.random()*260;
+    coins.push({x,y,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp,rot:Math.random()*6.28,
+      vr:(Math.random()-.5)*10,s:8+Math.random()*12,l:0,tl:1+Math.random()*.7,
+      ch:Math.random()<.6?RUB:'●'});
+  }
+}
+function stepFx(dt){
+  for(let i=sparks.length-1;i>=0;i--){const p=sparks[i];p.l+=dt;
+    if(p.l>p.tl){sparks.splice(i,1);continue;}p.x+=p.vx*dt;p.y+=p.vy*dt;}
+  for(let i=coins.length-1;i>=0;i--){const c=coins[i];c.l+=dt;
+    if(c.l>c.tl){coins.splice(i,1);continue;}
+    c.vy+=520*dt;c.x+=c.vx*dt;c.y+=c.vy*dt;c.rot+=c.vr*dt;}
+}
+function drawSparks(){
+  for(const p of sparks){const a=1-p.l/p.tl;
+    ctx.strokeStyle=`rgba(255,233,168,${a*.8})`;ctx.lineWidth=1;
+    line(p.x-p.s,p.y,p.x+p.s,p.y);line(p.x,p.y-p.s,p.x,p.y+p.s);}
+}
+function drawCoins(){
+  ctx.textAlign='center';ctx.textBaseline='middle';
+  for(const c of coins){const a=Math.max(0,1-c.l/c.tl);
+    ctx.save();ctx.translate(c.x,c.y);ctx.rotate(c.rot);ctx.globalAlpha=a;
+    if(c.ch===RUB){ctx.font=`800 ${c.s*1.6}px ${FD}`;
+      ctx.shadowColor='rgba(246,201,69,.7)';ctx.shadowBlur=8;
+      ctx.fillStyle=COL.gold;ctx.fillText(RUB,0,0);}
+    else{ctx.beginPath();ctx.arc(0,0,c.s*.5,0,7);ctx.fillStyle=COL.goldL;ctx.fill();
+      ctx.strokeStyle=COL.goldD;ctx.lineWidth=1;ctx.stroke();}
+    ctx.restore();}
+  ctx.globalAlpha=1;
+}
+function drawToast(now){
+  if(now>toast.until||!toast.msg)return;
+  const a=Math.min(1,(toast.until-now)/.4);
+  ctx.font=`600 13px ${FB}`;const w=Math.min(W-24,ctx.measureText(toast.msg).width+30);
+  ctx.globalAlpha=a;
+  rr(W/2-w/2,H-L.footH-46,w,32,16);ctx.fillStyle='rgba(18,42,29,.95)';ctx.fill();
+  ctx.strokeStyle='rgba(246,201,69,.4)';ctx.lineWidth=1;ctx.stroke();
+  fitTxt(toast.msg,W/2,H-L.footH-25,13,FB,600,COL.cream,'c',w-24);
+  ctx.globalAlpha=1;
+}
+function showToast(m,ms){toast.msg=m;toast.until=performance.now()/1000+(ms||2.4);}
+
+/* ---------- копирование ---------- */
+function copyText(s){
+  if(navigator.clipboard&&navigator.clipboard.writeText)return navigator.clipboard.writeText(s);
+  return new Promise((res,rej)=>{const ta=document.createElement('textarea');ta.value=s;
+    ta.style.cssText='position:fixed;opacity:0';document.body.appendChild(ta);ta.select();
+    try{document.execCommand('copy')?res():rej();}catch(e){rej(e);}ta.remove();});
+}
+function doCopy(){
+  const now=Date.now(),a=amountAt(now),kop=Math.floor(a*100)%100,
+        ds=new Date(now).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'}),
+        fc=amountAt(DEADLINE).toFixed(2).replace('.',',');
+  copyText(
+`Лёня, приём! 📈
+На ${ds} твой долг: ${fmtInt(Math.floor(a))},${p2(kop)} ${RUB}
+(занято 1 000 ${RUB} — 10.11.2026)
+Ставка: 1% в день, сложный процент, капает посекундно ⏱
+Дедлайн: 10.12.2026 — если дотянешь, будет уже ≈ ${fc} ${RUB}
+Чем раньше вернёшь — тем дешевле 😉`)
+  .then(()=>showToast('Скопировано! Отправь Лёне 💸'))
+  .catch(()=>showToast('Не скопировалось… скажи ему лично 😅'));
+}
+
+/* ---------- ввод ---------- */
+const toNat=(px,py)=>({x:(px-SCX)/K+NCX,y:(py-SCY)/K+NCY});
+const inR=(p,r)=>p.x>=r.x&&p.x<=r.x+r.w&&p.y>=r.y&&p.y<=r.y+r.h;
+function hitBtn(p){return inR(p,L.btnCopy)?'c':inR(p,L.btnSound)?'s':null;}
+function action(id){
+  if(id==='c')doCopy();
+  else{soundOn=!soundOn;try{localStorage.setItem('lenya_snd',soundOn?'1':'0');}catch(e){}
+    showToast(soundOn?'Звук монеток: ВКЛ':'Звук монеток: ВЫКЛ');if(soundOn)coinSnd();}
+}
+cv.addEventListener('pointerdown',e=>{
+  e.preventDefault();
+  const p=toNat(e.clientX,e.clientY),id=hitBtn(p);
+  if(id){pressed=id;return;}
+  burst(e.clientX,e.clientY);shake=Math.min(7,shake+3.5);flash=Math.max(flash,.7);coinSnd();
+},{passive:false});
+cv.addEventListener('pointerup',e=>{
+  const p=toNat(e.clientX,e.clientY),id=hitBtn(p);
+  if(pressed&&id===pressed)action(id);
+  pressed=null;
+});
+cv.addEventListener('pointercancel',()=>pressed=null);
+cv.addEventListener('pointermove',e=>{
+  hover=!!hitBtn(toNat(e.clientX,e.clientY));
+  cv.style.cursor=hover?'pointer':'default';
+});
+cv.addEventListener('contextmenu',e=>e.preventDefault());
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)lastT=performance.now()/1000;});
+addEventListener('resize',layout);
+
+/* ---------- цикл ---------- */
+function frame(){
+  const nowP=performance.now()/1000;let dt=nowP-lastT;lastT=nowP;
+  if(!(dt>0)||dt>.25)dt=.016;
+  fadeT+=dt;ambT+=dt;
+  const now=Date.now(),amount=amountAt(now),N=amount*1e4;
+  const kopI=Math.floor(amount*100);
+  if(lastKop<0)lastKop=kopI;
+  if(kopI!==lastKop){flash=1;lastKop=kopI;}
+  flash*=Math.exp(-dt*3);shake*=Math.exp(-dt*7);
+  if(ambT>.55){ambT=0;spawnSpark(W/2+(Math.random()-.5)*Math.max(120,L.panelW*.7),L.Y.panel+4);}
+  stepFx(dt);
+
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  ctx.globalAlpha=Math.min(1,fadeT*1.4);
+  drawBg(nowP,dt);
+  drawTicker(nowP,dt);
+  ctx.save();
+  ctx.translate(SCX+(Math.random()-.5)*shake,SCY+(Math.random()-.5)*shake);
+  ctx.scale(K,K);ctx.translate(-NCX,-NCY);
+  fitTxt('ДОЛГОВАЯ РАСПИСКА • ВЫДАНА 10.11.2026 • БЕЗ ПРОДЛЕНИЙ',W/2,L.Y.label,L.labS,FB,700,'rgba(246,201,69,.6)','c',W-2*L.pad);
+  drawTitle(nowP);
+  const slots=ensureSlots(amount);
+  drawPanel(nowP,N,slots);
+  fitTxt(`≈ +${(amount*Math.log(1.01)/86400*100).toFixed(4)} коп/сек • сложный процент • не остановишь`,
+      W/2,L.Y.rate,L.rateS,FB,600,COL.dim,'c',W-2*L.pad);
+  drawCards();
+  drawCountdown(now);
+  drawHint(nowP);
+  drawSparks();
+  drawButtons();
+  ctx.restore();
+  drawCoins();
+  drawFooter();
+  drawToast(nowP);
+  requestAnimationFrame(frame);
+}
+
+layout();
+ensureSlots(amountAt(Date.now()));
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
